@@ -1,9 +1,7 @@
-import React from 'react'
+import React from "react";
 
 const Main = () => {
-  return (
-    <div className="bg-hero"></div>
-  )
-}
+  return <div className="bg-hero" />;
+};
 
-export default Main
+export default Main;
