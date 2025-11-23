@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Smash Karts Clone Prototype</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; background: #330066; }
+        
+        /* UI Overlays */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* Main Menu */
+        #menu {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(135deg, #4b0082, #0000ff);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            pointer-events: auto; z-index: 10;
+        }
+        h1 { color: #fff; font-size: 80px; text-shadow: 4px 4px 0 #000; margin-bottom: 20px; font-style: italic; transform: skew(-10deg); }
+        
+        #play-btn {
+            background: #ffcc00; border: 4px solid #fff; color: #333;
+            padding: 20px 60px; font-size: 30px; font-weight: bold;
+            cursor: pointer; border-radius: 50px; transition: transform 0.1s;
+            box-shadow: 0 6px 0 #b38f00;
+        }
+        #play-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #b38f00; }
+
+        /* HUD */
+        #hud { display: none; pointer-events: none; }
+        .score-box {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(0,0,0,0.5); padding: 10px 20px; border-radius: 10px;
+            color: white; font-size: 24px; border: 2px solid #fff;
+        }
+        .controls {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: rgba(255,255,255,0.7); font-size: 18px; text-align: center;
+        }
+        
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            border: 2px solid white; border-radius: 50%; transform: translate(-50%, -50%);
+            background: rgba(255,255,255,0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Menu -->
+    <div id="menu">
+        <h1>SMASH CLONE</h1>
+        <button id="play-btn">PLAY</button>
+    </div>
+
+    <!-- HUD -->
+    <div id="ui-layer">
+        <div id="hud">
+            <div class="score-box">Score: <span id="score">0</span></div>
+            <div id="crosshair"></div>
+            <div class="controls">WASD to Drive | SPACE to Shoot</div>
+        </div>
+    </div>
+
+    <!-- Game Logic -->
+    <script type="module">
+        import * as THREE from 'https://cdn.skypack.dev/three@0.136.0';
+        import * as CANNON from 'https://cdn.skypack.dev/cannon-es@0.19.0';
+
+        // --- Game State ---
+        let gameState = 'MENU'; // MENU, PLAYING
+        let score = 0;
+        
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x2a004d); // Deep purple background
+        scene.fog = new THREE.Fog(0x2a004d, 20, 100);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 50, 20);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        // --- Cannon.js Physics Setup ---
+        const world = new CANNON.World();
+        world.gravity.set(0, -20, 0);
+        // Default material
+        const defaultMaterial = new CANNON.Material('default');
+        const defaultContactMaterial = new CANNON.ContactMaterial(defaultMaterial, defaultMaterial, {
+            friction: 0.3,
+            restitution: 0.5,
+        });
+        world.addContactMaterial(defaultContactMaterial);
+
+        // --- Objects Arrays ---
+        const physicsObjects = []; // { mesh, body }
+        const bullets = [];
+        const enemies = [];
+
+        // --- Helper Functions ---
+        function createBox(x, y, z, w, h, d, color, mass = 0) {
+            // Three.js
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mat = new THREE.MeshStandardMaterial({ color: color });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+
+            // Cannon.js
+            const shape = new CANNON.Box(new CANNON.Vec3(w/2, h/2, d/2));
+            const body = new CANNON.Body({
+                mass: mass,
+                shape: shape,
+                material: defaultMaterial
+            });
+            body.position.set(x, y, z);
+            world.addBody(body);
+
+            const obj = { mesh, body };
+            physicsObjects.push(obj);
+            return obj;
+        }
+
+        // --- Build The Level ---
+        // Floor
+        const floor = createBox(0, -1, 0, 200, 2, 200, 0x552288, 0); // Purple floor
+        
+        // Arena Walls
+        createBox(100, 5, 0, 10, 10, 200, 0x330055, 0);
+        createBox(-100, 5, 0, 10, 10, 200, 0x330055, 0);
+        createBox(0, 5, 100, 200, 10, 10, 0x330055, 0);
+        createBox(0, 5, -100, 200, 10, 10, 0x330055, 0);
+
+        // Random Obstacles (Boxes)
+        for(let i=0; i<15; i++) {
+            const x = (Math.random() - 0.5) * 150;
+            const z = (Math.random() - 0.5) * 150;
+            // Orange/Yellow aesthetic from screenshot
+            createBox(x, 2, z, 4, 4, 4, 0xffaa00, 5);
+        }
+
+        // --- The Player (Kart) ---
+        // We use a simplified "Raycast Vehicle" approximation: A box that slides but steers.
+        const kartShape = new CANNON.Box(new CANNON.Vec3(1, 0.5, 1.5));
+        const kartBody = new CANNON.Body({ mass: 150, material: defaultMaterial });
+        kartBody.addShape(kartShape);
+        kartBody.angularDamping = 0.5; // Prevent spinning forever
+        kartBody.linearDamping = 0.1; // Simulation of air resistance
+        kartBody.position.set(0, 2, 0);
+        world.addBody(kartBody);
+
+        // Visual Kart
+        const kartGeo = new THREE.BoxGeometry(2, 1, 3);
+        const kartMat = new THREE.MeshStandardMaterial({ color: 0x00ff00 }); // Green like screenshot
+        const kartMesh = new THREE.Mesh(kartGeo, kartMat);
+        kartMesh.castShadow = true;
+        scene.add(kartMesh);
+
+        // Add "Guns" to visual mesh
+        const gunGeo = new THREE.CylinderGeometry(0.2, 0.2, 1);
+        const gunMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+        const gunL = new THREE.Mesh(gunGeo, gunMat);
+        gunL.rotation.x = Math.PI/2;
+        gunL.position.set(-1, 0.2, 1);
+        kartMesh.add(gunL);
+        const gunR = gunL.clone();
+        gunR.position.set(1, 0.2, 1);
+        kartMesh.add(gunR);
+
+        // --- Inputs ---
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+        window.addEventListener('keydown', (e) => {
+            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true;
+            if(e.code === "Space") keys.space = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false;
+            if(e.code === "Space") keys.space = false;
+        });
+
+        // --- Enemy Logic ---
+        function spawnEnemy() {
+            const x = (Math.random() - 0.5) * 100;
+            const z = (Math.random() - 0.5) * 100;
+            const enemy = createBox(x, 2, z, 2, 2, 2, 0xff0000, 10); // Red enemies
+            enemy.isEnemy = true;
+            enemy.hp = 3;
+            enemies.push(enemy);
+        }
+        // Spawn initial enemies
+        for(let i=0; i<5; i++) spawnEnemy();
+
+        // --- Shooting Logic ---
+        let lastShootTime = 0;
+        function shoot() {
+            const now = Date.now();
+            if (now - lastShootTime < 200) return; // Fire rate
+            lastShootTime = now;
+
+            // Create Bullet physics
+            const radius = 0.3;
+            const shape = new CANNON.Sphere(radius);
+            const body = new CANNON.Body({ mass: 1, shape: shape });
+            
+            // Position bullet in front of car
+            const offset = new CANNON.Vec3(0, 0, 2.5); // Forward offset
+            const worldOffset = kartBody.quaternion.vmult(offset);
+            body.position.copy(kartBody.position.vadd(worldOffset));
+            
+            // Velocity relative to car direction
+            const shootSpeed = 50;
+            const forward = new CANNON.Vec3(0, 0, 1);
+            const worldForward = kartBody.quaternion.vmult(forward);
+            body.velocity.copy(worldForward.scale(shootSpeed));
+            
+            world.addBody(body);
+
+            // Bullet Visual
+            const geo = new THREE.SphereGeometry(radius);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            const mesh = new THREE.Mesh(geo, mat);
+            scene.add(mesh);
+
+            bullets.push({ mesh, body, life: 100 });
+        }
+
+        // --- Main Game Loop ---
+        const timeStep = 1 / 60;
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (gameState === 'MENU') {
+                renderer.render(scene, camera);
+                // Simple rotation for menu background
+                camera.position.x = Math.sin(Date.now() * 0.0005) * 50;
+                camera.position.z = Math.cos(Date.now() * 0.0005) * 50;
+                camera.lookAt(0,0,0);
+                return;
+            }
+
+            // 1. Update Physics
+            world.step(timeStep);
+
+            // 2. Player Movement logic (Arcade Style)
+            const speed = 80;
+            const turnSpeed = 2.5;
+            const forward = new CANNON.Vec3(0, 0, 1);
+            const carForward = kartBody.quaternion.vmult(forward);
+
+            // Forward/Back
+            if (keys.w) {
+                kartBody.velocity.x += carForward.x * speed * timeStep;
+                kartBody.velocity.z += carForward.z * speed * timeStep;
+            }
+            if (keys.s) {
+                kartBody.velocity.x -= carForward.x * speed * timeStep;
+                kartBody.velocity.z -= carForward.z * speed * timeStep;
+            }
+            // Turning (Torque)
+            if (keys.a) kartBody.angularVelocity.y += turnSpeed * timeStep;
+            if (keys.d) kartBody.angularVelocity.y -= turnSpeed * timeStep;
+
+            // Shooting
+            if (keys.space) shoot();
+
+            // 3. Sync Visuals
+            // Kart
+            kartMesh.position.copy(kartBody.position);
+            kartMesh.quaternion.copy(kartBody.quaternion);
+
+            // Camera Follow
+            const camOffset = new CANNON.Vec3(0, 5, -10);
+            const worldCamOffset = kartBody.quaternion.vmult(camOffset);
+            const targetPos = kartBody.position.vadd(worldCamOffset);
+            
+            camera.position.lerp(targetPos, 0.1); // Smooth follow
+            camera.lookAt(kartBody.position);
+
+            // Physics Objects sync
+            physicsObjects.forEach(obj => {
+                obj.mesh.position.copy(obj.body.position);
+                obj.mesh.quaternion.copy(obj.body.quaternion);
+            });
+
+            // 4. Bullet Management
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                b.mesh.position.copy(b.body.position);
+                b.life--;
+                
+                // Collision Check (Simple distance check for this prototype)
+                let hit = false;
+                for (let j = enemies.length - 1; j >= 0; j--) {
+                    const e = enemies[j];
+                    const dist = b.mesh.position.distanceTo(e.mesh.position);
+                    if (dist < 2.5) {
+                        // Hit enemy
+                        hit = true;
+                        e.hp--;
+                        // Push enemy back
+                        const pushDir = b.body.velocity.unit();
+                        e.body.velocity.vadd(pushDir.scale(10), e.body.velocity);
+
+                        if (e.hp <= 0) {
+                            // Kill Enemy
+                            scene.remove(e.mesh);
+                            world.removeBody(e.body);
+                            // Remove from physicsObjects array logic omitted for brevity, just removing visual/phys
+                            enemies.splice(j, 1);
+                            score += 100;
+                            document.getElementById('score').innerText = score;
+                            spawnEnemy(); // Respawn
+                        }
+                        break; 
+                    }
+                }
+
+                if (b.life <= 0 || hit) {
+                    scene.remove(b.mesh);
+                    world.removeBody(b.body);
+                    bullets.splice(i, 1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Resize Handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Start Button ---
+        document.getElementById('play-btn').addEventListener('click', () => {
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            gameState = 'PLAYING';
+            
+            // Reset positions
+            kartBody.position.set(0, 2, 0);
+            kartBody.velocity.set(0,0,0);
+            kartBody.angularVelocity.set(0,0,0);
+            kartBody.quaternion.set(0,0,0,1);
+        });
+
+        // Start Loop
+        animate();
+
+    </script>
+</body>
+</html>
